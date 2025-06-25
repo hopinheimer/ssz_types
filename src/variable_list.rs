@@ -7,6 +7,7 @@ use std::ops::{Deref, DerefMut, Index, IndexMut};
 use std::slice::SliceIndex;
 use tree_hash::Hash256;
 use typenum::Unsigned;
+use tree_hash::prototype::MerkleProof;
 
 pub use typenum;
 
@@ -225,6 +226,72 @@ where
         let root = vec_tree_hash_root::<T, N>(&self.vec);
 
         tree_hash::mix_in_length(&root, self.len())
+    }
+}
+
+impl <T, N: Unsigned> tree_hash::prototype::MerkleProof for VariableList<T,N>
+where 
+    T: MerkleProof
+{
+    fn compute_proof_for_gindex(&self, gindex: usize) -> Result<Vec<Hash256>, tree_hash::prototype::Error> {
+        if gindex == 0 {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+        
+        // For variable lists, we need to compute proof considering the actual length
+        let actual_len = self.len();
+        if actual_len == 0 {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+        
+        let max_len = N::to_usize();
+        let depth = (max_len.next_power_of_two().trailing_zeros() as usize).max(1);
+        
+        // Check if gindex is valid for this list
+        if gindex < (1 << depth) || gindex >= (1 << depth) + actual_len {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+        
+        // Extract the leaf index from gindex
+        let leaf_index = gindex - (1 << depth);
+        
+        if leaf_index >= actual_len {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+        
+        // Compute hashes for all elements
+        let mut hashes: Vec<Hash256> = self.iter()
+            .map(|item| item.tree_hash_root())
+            .collect();
+        
+        // Pad with zero hashes to next power of two based on max capacity
+        let target_len = max_len.next_power_of_two();
+        hashes.resize(target_len, Hash256::ZERO);
+        
+        // Build merkle proof
+        let mut proof = Vec::new();
+        let mut index = leaf_index;
+        
+        for _level in 0..depth {
+            let sibling_index = index ^ 1;
+            if sibling_index < hashes.len() {
+                proof.push(hashes[sibling_index]);
+            } else {
+                proof.push(Hash256::ZERO);
+            }
+            
+            // Move to next level
+            let mut next_level_hashes = Vec::new();
+            for i in (0..hashes.len()).step_by(2) {
+                let left = hashes[i];
+                let right = if i + 1 < hashes.len() { hashes[i + 1] } else { Hash256::ZERO };
+                next_level_hashes.push(tree_hash::merkle_root(&[left.as_slice(), right.as_slice()].concat(), 0));
+            }
+            hashes = next_level_hashes;
+            index /= 2;
+        }
+        
+        Ok(proof)
     }
 }
 
@@ -478,6 +545,16 @@ mod test {
         b: u32,
     }
 
+    impl tree_hash::prototype::MerkleProof for A {
+        fn compute_proof_for_gindex(&self, gindex: usize) -> Result<Vec<Hash256>, tree_hash::prototype::Error> {
+            if gindex != 1 {
+                return Err(tree_hash::prototype::Error::Oops);
+            }
+            // For basic types, proof is empty since they're leaf nodes
+            Ok(vec![])
+        }
+    }
+
     fn repeat(input: &[u8], n: usize) -> Vec<u8> {
         let mut output = vec![];
 
@@ -615,5 +692,42 @@ mod test {
         let json = serde_json::json!([1, 2, 3, 4]);
         let result: Result<VariableList<u64, U4>, _> = serde_json::from_value(json);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn merkle_proof_variable_list() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        let a1 = A { a: 1, b: 2 };
+        let a2 = A { a: 3, b: 4 };
+        let list: VariableList<A, U4> = vec![a1, a2].into();
+        
+        // Test invalid gindex (0)
+        let result = list.compute_proof_for_gindex(0);
+        assert!(result.is_err());
+        
+        // Test empty list
+        let empty_list: VariableList<A, U4> = vec![].into();
+        let result = empty_list.compute_proof_for_gindex(1);
+        assert!(result.is_err());
+        
+        // Test proof for first element
+        let result = list.compute_proof_for_gindex(4);
+        assert!(result.is_ok());
+        if let Ok(proof) = result {
+            assert!(!proof.is_empty()); // Should have sibling hashes
+        }
+        
+        // Test proof for second element  
+        let result = list.compute_proof_for_gindex(5);
+        assert!(result.is_ok());
+        if let Ok(proof) = result {
+            assert!(!proof.is_empty());
+        }
+        
+        // Test gindex out of bounds
+        let result = list.compute_proof_for_gindex(10);
+        assert!(result.is_err());
     }
 }

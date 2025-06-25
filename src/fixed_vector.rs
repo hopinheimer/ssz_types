@@ -7,6 +7,8 @@ use std::ops::{Deref, DerefMut, Index, IndexMut};
 use std::slice::SliceIndex;
 use tree_hash::Hash256;
 use typenum::Unsigned;
+use tree_hash::prototype::MerkleProof;
+use std::result::Result;
 
 pub use typenum;
 
@@ -208,6 +210,62 @@ where
     fn tree_hash_root(&self) -> Hash256 {
         vec_tree_hash_root::<T, N>(&self.vec)
     }
+}
+
+impl <T, N: Unsigned> MerkleProof for FixedVector<T, N>
+where
+    T: MerkleProof,
+{
+   fn compute_proof_for_gindex(&self, gindex: usize) -> Result<Vec<Hash256>, tree_hash::prototype::Error> {
+        if gindex == 0 {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+        
+        let depth = (N::to_usize().next_power_of_two().trailing_zeros() as usize).max(1);
+        let leaf_count = N::to_usize();
+        
+        if gindex < (1 << depth) || gindex >= (1 << depth) + leaf_count {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+        
+        let leaf_index = gindex - (1 << depth);
+        
+        if leaf_index >= self.len() {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+        
+        let mut hashes: Vec<Hash256> = self.iter()
+            .map(|item| item.tree_hash_root())
+            .collect();
+        
+        let target_len = leaf_count.next_power_of_two();
+        hashes.resize(target_len, Hash256::ZERO);
+        
+        let mut proof = Vec::new();
+        let mut index = leaf_index;
+        
+        for _ in 0..depth {
+            let sibling_index = index ^ 1;
+            if sibling_index < hashes.len() {
+                proof.push(hashes[sibling_index]);
+            } else {
+                proof.push(Hash256::ZERO);
+            }
+            
+            // Move to next level
+            let mut next_level_hashes = Vec::new();
+            for i in (0..hashes.len()).step_by(2) {
+                let left = hashes[i];
+                let right = if i + 1 < hashes.len() { hashes[i + 1] } else { Hash256::ZERO };
+                next_level_hashes.push(tree_hash::merkle_root(&[left.as_slice(), right.as_slice()].concat(), 0));
+            }
+            hashes = next_level_hashes;
+            index /= 2;
+        }
+        
+        Ok(proof)
+   } 
+
 }
 
 impl<T, N: Unsigned> ssz::Encode for FixedVector<T, N>
@@ -499,6 +557,16 @@ mod test {
         b: u32,
     }
 
+    impl tree_hash::prototype::MerkleProof for A {
+        fn compute_proof_for_gindex(&self, gindex: usize) -> Result<Vec<Hash256>, tree_hash::prototype::Error> {
+            if gindex != 1 {
+                return Err(tree_hash::prototype::Error::Oops);
+            }
+            // For basic types, proof is empty since they're leaf nodes
+            Ok(vec![])
+        }
+    }
+
     fn repeat(input: &[u8], n: usize) -> Vec<u8> {
         let mut output = vec![];
 
@@ -568,5 +636,37 @@ mod test {
         let json = serde_json::json!([1, 2, 3, 4]);
         let result: Result<FixedVector<u64, U4>, _> = serde_json::from_value(json);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn merkle_proof_composite() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U2;
+        
+        let a1 = A { a: 1, b: 2 };
+        let a2 = A { a: 3, b: 4 };
+        let vec: FixedVector<A, U2> = vec![a1, a2].into();
+        
+        // Test invalid gindex (0)
+        let result = vec.compute_proof_for_gindex(0);
+        assert!(result.is_err());
+        
+        // Test proof for first element
+        let result = vec.compute_proof_for_gindex(2);
+        assert!(result.is_ok());
+        if let Ok(proof) = result {
+            assert_eq!(proof.len(), 1); // Should have 1 sibling hash for depth 1
+        }
+        
+        // Test proof for second element
+        let result = vec.compute_proof_for_gindex(3);
+        assert!(result.is_ok());
+        if let Ok(proof) = result {
+            assert_eq!(proof.len(), 1);
+        }
+        
+        // Test gindex out of bounds
+        let result = vec.compute_proof_for_gindex(10);
+        assert!(result.is_err());
     }
 }
