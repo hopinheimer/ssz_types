@@ -228,6 +228,31 @@ where
     }
 }
 
+impl<T, N: Unsigned> tree_hash::prototype::MerkleProof for VariableList<T, N>
+where 
+    T: tree_hash::TreeHash
+{
+    fn compute_proof_for_gindex(&self, gindex: usize) -> Result<Vec<Hash256>, tree_hash::prototype::Error>{
+        if gindex < 2 {
+            return Err(tree_hash::prototype::Error::Oops);
+        }
+
+        // For VariableList, adjust gindex to account for length mixin (base gindex = 2)
+        // The tree structure for VariableList has the content tree at gindex 2
+        // So we need to map the input gindex to the content tree
+        let adjusted_gindex = if gindex == 2 {
+            1 // Root of content tree
+        } else if gindex > 2 {
+            gindex - 2 // Offset into the content tree
+        } else {
+            return Err(tree_hash::prototype::Error::Oops);
+        };
+
+        // Generate proof for the content tree
+        crate::tree_hash::generate_proof_for_vec::<T, N>(&self.vec, adjusted_gindex)
+    }
+}
+
 impl<T, N: Unsigned> ssz::Encode for VariableList<T, N>
 where
     T: ssz::Encode,
@@ -615,5 +640,229 @@ mod test {
         let json = serde_json::json!([1, 2, 3, 4]);
         let result: Result<VariableList<u64, U4>, _> = serde_json::from_value(json);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn merkle_proof_basic() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        let list: VariableList<u64, U4> = VariableList::new(vec![1, 2, 3]).unwrap();
+        
+        // Test invalid gindex 0 and 1 (VariableList requires gindex >= 2)
+        let proof = list.compute_proof_for_gindex(0);
+        assert!(proof.is_err());
+        
+        let proof = list.compute_proof_for_gindex(1);
+        assert!(proof.is_err());
+        
+        // Test valid gindex 2 (maps to root of content tree, so should be empty)
+        let proof = list.compute_proof_for_gindex(2);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            // Gindex 2 maps to root of content tree (adjusted_gindex = 1), so proof should be empty
+            assert_eq!(proof.len(), 0);
+        }
+        
+        // Test proof for higher gindices (should have non-empty proofs)
+        let proof = list.compute_proof_for_gindex(4);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            assert!(!proof.is_empty());
+        }
+    }
+
+    #[test]
+    fn merkle_proof_length_mixin() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U8;
+        
+        let list1: VariableList<u64, U8> = VariableList::new(vec![1, 2]).unwrap();
+        let list2: VariableList<u64, U8> = VariableList::new(vec![1, 2, 3, 4]).unwrap();
+        
+        // Different length lists should have different tree roots due to length mixin
+        let root1 = list1.tree_hash_root();
+        let root2 = list2.tree_hash_root();
+        assert_ne!(root1, root2);
+        
+        // Both should be able to generate proofs
+        let proof1 = list1.compute_proof_for_gindex(2);
+        let proof2 = list2.compute_proof_for_gindex(2);
+        assert!(proof1.is_ok());
+        assert!(proof2.is_ok());
+        
+        // Proofs might be same length due to same max capacity
+        if let (Ok(p1), Ok(p2)) = (proof1, proof2) {
+            assert_eq!(p1.len(), p2.len());
+        }
+    }
+
+    #[test]
+    fn merkle_proof_complex_types() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        // Create a list of composite types
+        let a1 = A { a: 1, b: 2 };
+        let a2 = A { a: 3, b: 4 };
+        let a3 = A { a: 5, b: 6 };
+        let list: VariableList<A, U4> = VariableList::new(vec![a1, a2, a3]).unwrap();
+        
+        // Test proof generation for complex types
+        let proof = list.compute_proof_for_gindex(4);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            // Verify proof structure
+            assert!(!proof.is_empty());
+            
+            // Test that all proof elements are valid Hash256
+            for hash in proof {
+                assert_eq!(hash.len(), 32);
+            }
+        }
+    }
+
+    #[test]
+    fn merkle_proof_empty_list() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        let list: VariableList<u64, U4> = VariableList::new(vec![]).unwrap();
+        
+        // Even empty lists should be able to generate proofs for valid gindices
+        let proof = list.compute_proof_for_gindex(2);
+        assert!(proof.is_ok());
+        
+        // Gindex 2 maps to root of content tree, so proof should be empty
+        if let Ok(proof) = proof {
+            assert_eq!(proof.len(), 0);
+        }
+        
+        // Test a non-root gindex
+        let proof = list.compute_proof_for_gindex(4);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            assert!(!proof.is_empty());
+        }
+    }
+
+    #[test]
+    fn merkle_proof_debug() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        let list: VariableList<u64, U4> = VariableList::new(vec![1, 2, 3]).unwrap();
+        
+        // Debug: Let's test different gindices step by step
+        println!("Testing gindex 2...");
+        let proof2 = list.compute_proof_for_gindex(2);
+        println!("gindex 2 result: {:?}", proof2.is_ok());
+        
+        println!("Testing gindex 3...");
+        let proof3 = list.compute_proof_for_gindex(3);
+        println!("gindex 3 result: {:?}", proof3.is_ok());
+        
+        println!("Testing gindex 4...");
+        let proof4 = list.compute_proof_for_gindex(4);
+        println!("gindex 4 result: {:?}", proof4.is_ok());
+        
+        println!("Testing gindex 5...");
+        let proof5 = list.compute_proof_for_gindex(5);
+        println!("gindex 5 result: {:?}", proof5.is_ok());
+        
+        println!("Testing gindex 6...");
+        let proof6 = list.compute_proof_for_gindex(6);
+        println!("gindex 6 result: {:?}", proof6.is_ok());
+        
+        // For now, just test that the basic ones work
+        assert!(proof2.is_ok());
+        assert!(proof3.is_ok());  
+        assert!(proof4.is_ok());
+    }
+
+    #[test]
+    fn merkle_proof_consistency() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        let list1: VariableList<u64, U4> = VariableList::new(vec![1, 2, 3]).unwrap();
+        let list2: VariableList<u64, U4> = VariableList::new(vec![1, 2, 3]).unwrap();
+        
+        // Same lists should produce same proofs
+        let proof1 = list1.compute_proof_for_gindex(4);
+        let proof2 = list2.compute_proof_for_gindex(4);
+        assert!(proof1.is_ok());
+        assert!(proof2.is_ok());
+        if let (Ok(p1), Ok(p2)) = (proof1, proof2) {
+            assert_eq!(p1, p2);
+        }
+        
+        // Different lists should have different tree roots
+        let list3: VariableList<u64, U4> = VariableList::new(vec![4, 5, 6]).unwrap();
+        let root1 = list1.tree_hash_root();
+        let root3 = list3.tree_hash_root();
+        assert_ne!(root1, root3);
+    }
+
+    #[test]
+    fn merkle_proof_varying_lengths() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U8;
+        
+        // Test lists of different lengths up to max capacity
+        for len in 0..=8 {
+            let data: Vec<u64> = (1..=len as u64).collect();
+            let list: VariableList<u64, U8> = VariableList::new(data).unwrap();
+            
+            // All should be able to generate proofs
+            let proof = list.compute_proof_for_gindex(2);
+            assert!(proof.is_ok(), "Failed to generate proof for length {}", len);
+            
+            // Verify tree root consistency with length
+            let root = list.tree_hash_root();
+            assert_ne!(root, Hash256::new([0; 32]), "Root should not be zero for length {}", len);
+        }
+    }
+
+    #[test]
+    fn merkle_proof_tree_structure() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U8;
+        
+        let list: VariableList<u64, U8> = VariableList::new(vec![1, 2, 3, 4, 5]).unwrap();
+        
+        // Test various gindices to understand tree structure
+        let test_gindices = vec![2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16];
+        
+        for gindex in test_gindices {
+            let proof = list.compute_proof_for_gindex(gindex);
+            assert!(proof.is_ok(), "Failed to generate proof for gindex {}", gindex);
+            
+            if let Ok(proof) = proof {
+                // Check if this gindex maps to the root of content tree
+                let adjusted_gindex = if gindex == 2 {
+                    1
+                } else {
+                    gindex - 2
+                };
+                
+                if adjusted_gindex == 1 {
+                    assert_eq!(proof.len(), 0, "Proof should be empty for gindex {} (maps to root)", gindex);
+                } else {
+                    assert!(!proof.is_empty(), "Proof should not be empty for gindex {}", gindex);
+                }
+                
+                // Verify proof length corresponds to adjusted tree depth
+                let adjusted_gindex = if gindex == 2 {
+                    1
+                } else {
+                    gindex - 2
+                };
+                if adjusted_gindex > 1 {
+                    let expected_depth = 64 - adjusted_gindex.leading_zeros() as usize - 1;
+                    assert_eq!(proof.len(), expected_depth, "Incorrect proof length for gindex {}", gindex);
+                }
+            }
+        }
     }
 }

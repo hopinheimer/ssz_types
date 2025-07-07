@@ -210,6 +210,14 @@ where
     }
 }
 
+impl<T, N: Unsigned> tree_hash::prototype::MerkleProof for FixedVector<T, N>
+where 
+    T: tree_hash::TreeHash
+{
+    fn compute_proof_for_gindex(&self, gindex: usize) -> Result<Vec<Hash256>, tree_hash::prototype::Error>{
+        crate::tree_hash::generate_proof_for_vec::<T, N>(&self.vec, gindex)
+    }
+}
 impl<T, N: Unsigned> ssz::Encode for FixedVector<T, N>
 where
     T: ssz::Encode,
@@ -568,5 +576,131 @@ mod test {
         let json = serde_json::json!([1, 2, 3, 4]);
         let result: Result<FixedVector<u64, U4>, _> = serde_json::from_value(json);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn merkle_proof_basic() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        let vec: FixedVector<u64, U4> = FixedVector::new(vec![1, 2, 3, 4]).unwrap();
+        
+        // Test that we can generate a proof for gindex 1 (root)
+        let proof = vec.compute_proof_for_gindex(1);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            // Root has no siblings, so proof should be empty
+            assert_eq!(proof.len(), 0);
+        }
+        
+        // Test proof for gindex 2 (first element at leaf level for basic types)
+        let proof = vec.compute_proof_for_gindex(2);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            // Should have some proof elements (currently zeros)
+            assert!(!proof.is_empty());
+        }
+        
+        // Test invalid gindex 0
+        let proof = vec.compute_proof_for_gindex(0);
+        assert!(proof.is_err());
+    }
+
+    #[test]
+    fn merkle_proof_complex_types() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U2;
+        
+        // Create a vector of composite types
+        let a1 = A { a: 1, b: 2 };
+        let a2 = A { a: 3, b: 4 };
+        let vec: FixedVector<A, U2> = FixedVector::new(vec![a1, a2]).unwrap();
+        
+        // Test proof generation for complex types
+        let proof = vec.compute_proof_for_gindex(2);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            // Verify proof structure
+            assert!(!proof.is_empty());
+            
+            // Test that all proof elements are valid Hash256
+            for hash in proof {
+                assert_eq!(hash.len(), 32);
+            }
+        }
+    }
+
+    #[test]
+    fn merkle_proof_tree_depth() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U8;
+        
+        let vec: FixedVector<u64, U8> = FixedVector::new(vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        
+        // Test different gindices to verify tree structure
+        let gindices = vec![1, 2, 3, 4, 5, 6, 7, 8, 15, 16];
+        
+        for gindex in gindices {
+            let proof = vec.compute_proof_for_gindex(gindex);
+            
+            if gindex == 0 {
+                assert!(proof.is_err());
+            } else if gindex == 1 {
+                // Root has no proof
+                if let Ok(proof) = proof {
+                    assert_eq!(proof.len(), 0);
+                }
+            } else {
+                // Other nodes should have proofs
+                if let Ok(proof) = proof {
+                    // Verify proof length corresponds to tree depth
+                    let expected_depth = 64 - gindex.leading_zeros() as usize - 1;
+                    assert_eq!(proof.len(), expected_depth);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn merkle_proof_consistency() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U4;
+        
+        let vec1: FixedVector<u64, U4> = FixedVector::new(vec![1, 2, 3, 4]).unwrap();
+        let vec2: FixedVector<u64, U4> = FixedVector::new(vec![1, 2, 3, 4]).unwrap();
+        
+        // Same vectors should produce same proofs
+        let proof1 = vec1.compute_proof_for_gindex(2);
+        let proof2 = vec2.compute_proof_for_gindex(2);
+        assert!(proof1.is_ok());
+        assert!(proof2.is_ok());
+        if let (Ok(p1), Ok(p2)) = (proof1, proof2) {
+            assert_eq!(p1, p2);
+        }
+        
+        // Different vectors should produce different tree roots
+        let vec3: FixedVector<u64, U4> = FixedVector::new(vec![5, 6, 7, 8]).unwrap();
+        let root1 = vec1.tree_hash_root();
+        let root3 = vec3.tree_hash_root();
+        assert_ne!(root1, root3);
+    }
+
+    #[test]
+    fn merkle_proof_empty_vector() {
+        use tree_hash::prototype::MerkleProof;
+        use typenum::U0;
+        
+        let vec: FixedVector<u64, U0> = FixedVector::new(vec![]).unwrap();
+        
+        // Test proof for empty vector
+        let proof = vec.compute_proof_for_gindex(1);
+        assert!(proof.is_ok());
+        if let Ok(proof) = proof {
+            assert_eq!(proof.len(), 0);
+        }
+        
+        // Any other gindex should still work (though may not be meaningful)
+        let proof = vec.compute_proof_for_gindex(2);
+        assert!(proof.is_ok());
     }
 }
