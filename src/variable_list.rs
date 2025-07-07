@@ -237,18 +237,14 @@ where
             return Err(tree_hash::prototype::Error::Oops);
         }
 
-        // For VariableList, adjust gindex to account for length mixin (base gindex = 2)
-        // The tree structure for VariableList has the content tree at gindex 2
-        // So we need to map the input gindex to the content tree
         let adjusted_gindex = if gindex == 2 {
-            1 // Root of content tree
+            1 
         } else if gindex > 2 {
-            gindex - 2 // Offset into the content tree
+            gindex - 2 
         } else {
             return Err(tree_hash::prototype::Error::Oops);
         };
 
-        // Generate proof for the content tree
         crate::tree_hash::generate_proof_for_vec::<T, N>(&self.vec, adjusted_gindex)
     }
 }

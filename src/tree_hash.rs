@@ -53,7 +53,6 @@ where
             current_gindex + 1
         };
         
-        // Compute the sibling hash using the same logic as vec_tree_hash_root
         let sibling_hash = compute_node_hash_at_gindex::<T, N>(vec, sibling_gindex, effective_size)?;
         proof.push(sibling_hash);
         
@@ -63,7 +62,6 @@ where
     Ok(proof)
 }
 
-/// Compute the hash at a specific gindex, leveraging existing tree_hash patterns
 fn compute_node_hash_at_gindex<T, N>(
     vec: &[T], 
     gindex: usize, 
@@ -80,7 +78,6 @@ where
             let chunk_count = (target_size + T::tree_hash_packing_factor() - 1) / T::tree_hash_packing_factor();
             
             if gindex >= effective_size {
-                // This is a leaf node (packed chunk)
                 let chunk_index = gindex - effective_size;
                 if chunk_index < chunk_count {
                     let start_idx = chunk_index * T::tree_hash_packing_factor();
@@ -95,7 +92,6 @@ where
                     Ok(Hash256::new([0; 32]))
                 }
             } else {
-                // Internal node - compute from children
                 let left_child = gindex * 2;
                 let right_child = gindex * 2 + 1;
                 
@@ -107,7 +103,6 @@ where
         }
         _ => {
             if gindex >= effective_size {
-                // This is a leaf node
                 let leaf_index = gindex - effective_size;
                 if leaf_index < vec.len() {
                     Ok(vec[leaf_index].tree_hash_root())
@@ -115,7 +110,6 @@ where
                     Ok(Hash256::new([0; 32]))
                 }
             } else {
-                // Internal node - compute from children  
                 let left_child = gindex * 2;
                 let right_child = gindex * 2 + 1;
                 
